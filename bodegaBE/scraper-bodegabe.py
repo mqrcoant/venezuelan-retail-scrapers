@@ -5,6 +5,10 @@ import time
 import re
 import requests
 import concurrent.futures
+from pathlib import Path
+
+FINAL_DIR = Path(__file__).resolve().parents[1] / "finales"
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def iniciar_navegador():
     print("Iniciando navegador Thorium (undetected_chromedriver)...")
@@ -154,12 +158,12 @@ if __name__ == "__main__":
                     p.pop('Enlace Producto', None)
                     
                 df = pd.DataFrame(todos_los_datos)
-                nombre_excel = "bodegon_beplus_maestro.xlsx"
+                nombre_excel = FINAL_DIR / "bodegon_beplus_maestro.xlsx"
                 try:
                     df.to_excel(nombre_excel, index=False)
                     print(f"\n¡Éxito total! {len(todos_los_datos)} productos exportados a {nombre_excel}.")
                 except ImportError:
-                    nombre_csv = "bodegon_beplus_maestro.csv"
+                    nombre_csv = FINAL_DIR / "bodegon_beplus_maestro.csv"
                     df.to_csv(nombre_csv, index=False, sep=';', decimal=',')
                     print(f"\n¡Éxito total! Exportado a {nombre_csv} (instala openpyxl para exportar a excel).")
             else:

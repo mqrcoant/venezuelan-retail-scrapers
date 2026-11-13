@@ -13,7 +13,7 @@ def obtener_arbol_categorias():
     # El /3 al final indica la profundidad (Departamentos > Categorías > Subcategorías)
     url = "https://www.farmaciasaas.com/api/catalog_system/pub/category/tree/3"
     
-    respuesta = requests.get(url, headers=headers)
+    respuesta = requests.get(url, headers=headers, timeout=20)
     if respuesta.status_code == 200:
         return respuesta.json()
     else:
@@ -61,7 +61,7 @@ def scrapear_subcategoria(path_categoria, departamento, subcategoria):
         url = f"https://www.farmaciasaas.com/api/catalog_system/pub/products/search/{path_categoria}?_from={inicio}&_to={inicio + paso}"
         
         time.sleep(1)  # Pausa por cortesía
-        respuesta = requests.get(url, headers=headers)
+        respuesta = requests.get(url, headers=headers, timeout=20)
         
         # Aceptamos 200 y 206 (Contenido Parcial)
         if respuesta.status_code not in [200, 206]:

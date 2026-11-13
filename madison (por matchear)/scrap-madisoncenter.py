@@ -1,6 +1,7 @@
 import requests
 import time
 import csv
+from pathlib import Path
 from bs4 import BeautifulSoup
 
 CATEGORIAS_EXCLUIDAS = {
@@ -28,9 +29,7 @@ def obtener_rutas_madison(ruta_html):
 
 def scrapear_madison_shopify(rutas, dominio):
     productos_extraidos = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    session = requests.Session()
     
     for ruta in rutas:
         print(f"Extrayendo: {ruta['categoria']}...")
@@ -40,9 +39,15 @@ def scrapear_madison_shopify(rutas, dominio):
             url_json = f"{dominio}{ruta['url_path']}/products.json?limit=250&page={pagina}"
             
             try:
-                respuesta = requests.get(url_json, headers=headers, timeout=10)
+                for intento in range(3):
+                    respuesta = session.get(url_json, timeout=20)
+                    if respuesta.status_code != 429:
+                        break
+                    espera = 10 * (2 ** intento)
+                    print(f"     [!] HTTP 429; pausa de {espera}s antes de reintentar")
+                    time.sleep(espera)
                 if respuesta.status_code != 200:
-                    break
+                    raise RuntimeError(f"HTTP {respuesta.status_code} en {url_json}")
                     
                 data = respuesta.json()
                 items = data.get('products', [])
@@ -54,40 +59,43 @@ def scrapear_madison_shopify(rutas, dominio):
                     if not prod.get('variants'):
                         continue
                         
-                    variante_principal = prod['variants'][0]
-                    
-                    if not variante_principal.get('available'):
-                        continue
-                        
-                    precio = float(variante_principal.get('price', 0))
-                    
-                    if precio <= 0:
-                        continue
-                        
                     img_url = prod['images'][0]['src'] if prod.get('images') else None
-                    ean = variante_principal.get('barcode')
-                    sku = variante_principal.get('sku')
-                    id_variante = str(variante_principal.get('id'))
-                    
-                    productos_extraidos.append({
-                        '_id_interno': id_variante, 
-                        'comercio': 'Madison Center',
-                        'departamento': ruta['categoria'],
-                        'subcategoria': prod.get('product_type', ruta['categoria']),
-                        'marca': prod.get('vendor'),
-                        'ean': str(ean).strip() if ean else None,
-                        'sku_interno': str(sku).strip() if sku else id_variante,
-                        'nombre': prod.get('title'),
-                        'precio': precio,
-                        'imagen': img_url
-                    })
+                    descripcion = BeautifulSoup(prod.get('body_html') or '', 'html.parser').get_text(' ', strip=True)[:30000]
+                    for variante in prod['variants']:
+                        precio = float(variante.get('price') or 0)
+                        if precio <= 0:
+                            continue
+                        ean = variante.get('barcode')
+                        sku = variante.get('sku')
+                        id_variante = str(variante.get('id'))
+                        titulo_variante = variante.get('title') or ''
+                        nombre = prod.get('title') or ''
+                        if titulo_variante and titulo_variante != 'Default Title':
+                            nombre = f"{nombre} - {titulo_variante}"
+                        precio_anterior = float(variante.get('compare_at_price') or 0)
+                        productos_extraidos.append({
+                            '_id_interno': id_variante,
+                            'comercio': 'Madison Center',
+                            'departamento': ruta['categoria'],
+                            'subcategoria': prod.get('product_type', ruta['categoria']),
+                            'marca': prod.get('vendor'),
+                            'ean': str(ean).strip() if ean else None,
+                            'sku_interno': str(sku).strip() if sku else id_variante,
+                            'nombre': nombre,
+                            'precio': precio,
+                            'precio_anterior': precio_anterior if precio_anterior > precio else None,
+                            'disponible': bool(variante.get('available')),
+                            'descripcion': descripcion,
+                            'actualizado_en_tienda': variante.get('updated_at'),
+                            'imagen': img_url
+                        })
                     
                 pagina += 1
-                time.sleep(1) 
+                time.sleep(2)
                 
             except Exception as e:
                 print(f"     [!] Error de conexión en {ruta['categoria']}: {e}")
-                break
+                raise
                 
     return productos_extraidos
 
@@ -98,7 +106,7 @@ def guardar_madison_csv(datos, archivo="maestro_madison.csv"):
     datos_deduplicados = {p['_id_interno']: p for p in datos}.values()
     
     # Columnas limpias finales (reincorporando sku_interno)
-    cabeceras = ['comercio', 'departamento', 'subcategoria', 'marca', 'ean', 'sku_interno', 'nombre', 'precio', 'imagen']
+    cabeceras = ['comercio', 'departamento', 'subcategoria', 'marca', 'ean', 'sku_interno', 'nombre', 'precio', 'precio_anterior', 'disponible', 'descripcion', 'actualizado_en_tienda', 'imagen']
     
     with open(archivo, mode='w', newline='', encoding='utf-8') as f:
         escritor = csv.DictWriter(f, fieldnames=cabeceras, extrasaction='ignore')
@@ -110,7 +118,7 @@ def guardar_madison_csv(datos, archivo="maestro_madison.csv"):
 if __name__ == "__main__":
     DOMINIO_MADISON = "https://www.madisoncenter.com" 
     
-    rutas = obtener_rutas_madison('C:\\Users\\USUARIO\\Documents\\1. Work\\Kuantip\\scripts\\madison\\navbar-madison.html')
+    rutas = obtener_rutas_madison(Path(__file__).resolve().parent / 'navbar-madison.html')
     print(f"Mapeadas {len(rutas)} categorías permitidas.\n")
     
     datos = scrapear_madison_shopify(rutas, DOMINIO_MADISON)

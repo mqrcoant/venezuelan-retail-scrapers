@@ -364,7 +364,9 @@ def extraer_catalogo():
             )
             df["Dispo."] = pd.to_numeric(df["Dispo."], errors="coerce")
 
-            salida = "catalogo_completo_farmatencion.xlsx"
+            from pathlib import Path
+            salida = Path(__file__).resolve().parents[1] / "finales" / "catalogo_completo_farmatencion.xlsx"
+            salida.parent.mkdir(parents=True, exist_ok=True)
             df.to_excel(salida, index=False)
             print(f"Excel creado: {salida} | {len(df)} filas")
 

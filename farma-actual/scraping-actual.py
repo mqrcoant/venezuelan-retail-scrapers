@@ -2,17 +2,22 @@ import requests
 from bs4 import BeautifulSoup
 import csv
 import time
+import os
 
 def scrapear_farmacia_actual():
     while True:
-        tasa_input = input("Ingresa la tasa BCV de hoy (ej. 36.50 o 36,50): ").strip().replace(',', '.')
+        tasa_input = (os.environ.get("BCV_RATE") or input("Ingresa la tasa BCV de hoy: ")).strip().replace(',', '.')
         try:
             tasa_bcv = float(tasa_input)
             if tasa_bcv > 0:
                 print(f"Tasa fijada en: {tasa_bcv} Bs/USD. Iniciando extracción...\n")
                 break
+            if os.environ.get("BCV_RATE"):
+                raise SystemExit("BCV_RATE debe ser positiva")
             print("Error: La tasa debe ser mayor a 0.")
         except ValueError:
+            if os.environ.get("BCV_RATE"):
+                raise SystemExit("BCV_RATE inválida")
             print("Error: Formato numérico inválido.")
 
     base_url = "https://www.tufarmaciaactual.com/shop/page/"
@@ -31,7 +36,7 @@ def scrapear_farmacia_actual():
     while True:
         print(f"Extrayendo página {pagina}...")
         url = f"{base_url}{pagina}"
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=20)
         
         if res.status_code != 200:
             print("Límite de ruta alcanzado.")

@@ -30,7 +30,7 @@ def extraer_tienda(context, nombre_tienda):
     
     try:
         page.goto(url_tienda)
-        page.wait_for_selector(".product", timeout=20000)
+        page.wait_for_selector(".product:not(.is-skeleton)", timeout=20000)
         time.sleep(2)
     except Exception as e:
         print(f"[!] Error al cargar los productos de la tienda: {e}")
@@ -40,7 +40,7 @@ def extraer_tienda(context, nombre_tienda):
     # ==========================================
     # 1. EXTRAER EL NÚMERO TOTAL DE PÁGINAS
     # ==========================================
-    total_paginas = 1
+    total_paginas = None
     try:
         texto_resumen = page.locator(".search-results-summary").inner_text(timeout=5000)
         match = re.search(r"de (\d+)\)", texto_resumen)
@@ -48,12 +48,16 @@ def extraer_tienda(context, nombre_tienda):
             total_paginas = int(match.group(1))
             print(f"[+] Se detectaron {total_paginas} páginas a procesar.")
     except Exception:
-        print("[!] No se detectó la paginación, se asume 1 página.")
+        pass
+    if not total_paginas:
+        print("[!] No se detectó la paginación real; se omite la tienda para evitar datos parciales.")
+        page.close()
+        return []
 
     # ==========================================
     # 2. BUCLE FOR SEGURO
     # ==========================================
-    selector_tarjeta = ".product"
+    selector_tarjeta = ".product:not(.is-skeleton)"
     
     for pagina_actual in range(1, total_paginas + 1):
         print(f"  - Extrayendo página {pagina_actual} de {total_paginas}...")

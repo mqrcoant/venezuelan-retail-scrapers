@@ -257,8 +257,11 @@ if __name__ == "__main__":
     print("=== INICIANDO EXTRACCIÓN MASIVA EN TIEMPO REAL (18 SEDES) ===")
     
     ARCHIVO_MAESTRO = "maestro_elplazas.csv"
-    MI_EMAIL = "tu_correo@ejemplo.com"
-    MI_PASSWORD = "tu_contraseña"
+    import os
+    MI_EMAIL = os.environ.get("PLAZA_EMAIL")
+    MI_PASSWORD = os.environ.get("PLAZA_PASSWORD")
+    if not MI_EMAIL or not MI_PASSWORD:
+        raise SystemExit("Faltan PLAZA_EMAIL y PLAZA_PASSWORD; no se inicia el scraping")
     
     sesion_global = configurar_sesion_robusta()
     productos_dict = {}

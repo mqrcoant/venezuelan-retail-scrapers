@@ -3,6 +3,10 @@ import aiohttp
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 import pandas as pd
+from pathlib import Path
+
+FINAL_DIR = Path(__file__).resolve().parents[1] / "finales"
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==========================================
 # FASE 1: OBTENER SESIÓN CON PLAYWRIGHT
@@ -151,7 +155,7 @@ async def main():
         
         # Exportar a Excel con Pandas
         df = pd.DataFrame(catalogo_maestro)
-        df.to_excel("catalogo_viva.xlsx", index=False, engine='openpyxl')
+        df.to_excel(FINAL_DIR / "catalogo_viva.xlsx", index=False, engine='openpyxl')
         print("[+] Archivo 'catalogo_viva.xlsx' generado con éxito.")
 
 if __name__ == "__main__":

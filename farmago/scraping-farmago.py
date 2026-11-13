@@ -151,16 +151,18 @@ def guardar_farmago_csv(datos, tasa_bcv, nombre_archivo_con_ean="maestro_farmago
         print(f"¡Se guardaron {len(productos_sin_ean)} productos SIN EAN en: {nombre_archivo_sin_ean}")
 
 if __name__ == "__main__":
-    # Solicitamos la tasa BCV al usuario antes de empezar
-    entrada_tasa = input("Ingresa la tasa BCV actual (ejemplo: 36.50): ")
+    import os
+    # El pipeline inyecta la tasa; la ejecución manual puede solicitarla.
+    entrada_tasa = os.environ.get("BCV_RATE") or input("Ingresa la tasa BCV actual: ")
     # Reemplazamos coma por punto por si el usuario se equivoca al escribir el decimal
     entrada_tasa = entrada_tasa.replace(',', '.')
     
     try:
         tasa_bcv_actual = float(entrada_tasa)
-    except ValueError:
-        print("El valor ingresado no es válido. Se usará una tasa de 1 para evitar errores en la división.")
-        tasa_bcv_actual = 1.0
+    except ValueError as exc:
+        raise SystemExit("Tasa BCV inválida: no se publicará un precio convertido incorrecto") from exc
+    if tasa_bcv_actual <= 0:
+        raise SystemExit("La tasa BCV debe ser positiva")
 
     print("\nIniciando extracción en Farmago (Odoo)...\n")
     

@@ -11,7 +11,7 @@ def obtener_arbol_categorias_locatel():
     headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
     url = "https://www.locatel.com.ve/api/catalog_system/pub/category/tree/3"
     
-    respuesta = requests.get(url, headers=headers)
+    respuesta = requests.get(url, headers=headers, timeout=20)
     if respuesta.status_code == 200:
         return respuesta.json()
     else:
@@ -169,8 +169,11 @@ def guardar_locatel_csv(datos, nombre_archivo_con_sku="prods_locatel.csv", nombr
         print(f"¡Se guardaron {len(productos_sin_sku)} productos SIN SKU en: {nombre_archivo_sin_sku}")
 
 if __name__ == "__main__":
-    tasa_input = input("Ingresa la tasa BCV de hoy (ej. 36.65): ")
+    import os
+    tasa_input = os.environ.get("BCV_RATE") or input("Ingresa la tasa BCV de hoy: ")
     TASA_BCV = float(tasa_input.replace(',', '.'))
+    if TASA_BCV <= 0:
+        raise SystemExit("La tasa BCV debe ser positiva")
     arbol = obtener_arbol_categorias_locatel()
     rutas_a_scrapear = extraer_rutas_hojas(arbol)
     

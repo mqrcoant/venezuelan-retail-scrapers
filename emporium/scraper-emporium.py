@@ -60,7 +60,7 @@ def extraer_detalle_producto(producto):
 def scrapear_catalogo():
     # Hacemos una petición inicial a la home para capturar cualquier cookie necesaria
     print("Inicializando sesión y capturando cookies...")
-    session.get(BASE_URL)
+    session.get(BASE_URL, timeout=20)
 
     with open('catalogo_emporium.csv', mode='w', newline='', encoding='utf-8') as csv_file:
         writer = csv.writer(csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -75,7 +75,7 @@ def scrapear_catalogo():
                 url = f"{BASE_URL}/Products.php?cat={cat_code}&suc=02&Page={page}"
                 print(f"Obteniendo lista de productos - Página {page}...")
                 
-                response = session.get(url)
+                response = session.get(url, timeout=20)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 productos_html = soup.find_all('div', class_='groups-product-item')
                 

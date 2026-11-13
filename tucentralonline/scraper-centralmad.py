@@ -183,7 +183,10 @@ def main():
 
     # Procesamiento final
     if todos_los_productos:
-        procesar_y_guardar_excel(todos_los_productos, 'inventario_consolidado_tucentral.xlsx')
+        from pathlib import Path
+        salida_final = Path(__file__).resolve().parents[1] / "finales" / "inventario_consolidado_tucentral.xlsx"
+        salida_final.parent.mkdir(parents=True, exist_ok=True)
+        procesar_y_guardar_excel(todos_los_productos, str(salida_final))
         print("\n🎉 ¡PROCESO COMPLETADO EXITOSAMENTE!")
     else:
         print("\n❌ No se extrajeron datos. Revisa si sigues bloqueado.")

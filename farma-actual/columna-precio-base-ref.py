@@ -1,12 +1,14 @@
 import pandas as pd
 import re
+import os
+from pathlib import Path
 
 # Configuración de archivos
-ARCHIVO_ENTRADA = 'C:\\Users\\USUARIO\\Documents\\1. Work\\Kuantip\\scripts\\farma-actual\\maestro_tu_farmacia_actual.csv'
-ARCHIVO_SALIDA = 'C:\\Users\\USUARIO\\Documents\\1. Work\\Kuantip\\scripts\\farma-actual\\maestro_tu_farmacia_actual_base.csv'
+ARCHIVO_ENTRADA = Path(__file__).resolve().parent / 'maestro_tu_farmacia_actual.csv'
+ARCHIVO_SALIDA = Path(__file__).resolve().parent / 'maestro_tu_farmacia_actual_base.csv'
 
 # Tasa del BCV del día en que se hizo el scraping
-TASA_BCV = 813.74  # <--- MODIFICAR A LA TASA REAL
+TASA_BCV = float(os.environ['BCV_RATE'])
 
 # Nombre de la columna que contiene el precio en el CSV
 COLUMNA_PRECIO = 'precio_bs'  # <--- Ajustar si se llama diferente (ej: 'precio_bs')

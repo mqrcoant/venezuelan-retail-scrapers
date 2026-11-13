@@ -1,0 +1,14 @@
+aiohttp
+beautifulsoup4
+curl_cffi
+numpy
+openpyxl
+pandas
+playwright
+playwright-stealth
+rapidfuzz
+requests
+selenium
+undetected-chromedriver
+webdriver-manager
+xlsxwriter

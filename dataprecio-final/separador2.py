@@ -6,7 +6,7 @@ archivo_origen = 'prods_dataprecio.csv'
 df = pd.read_csv(archivo_origen)
 
 # 2. Crear la carpeta "comercios-separados"
-carpeta_salida = 'comercios-separados'
+carpeta_salida = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'finales', 'dataprecio')
 if not os.path.exists(carpeta_salida):
     os.makedirs(carpeta_salida)
 

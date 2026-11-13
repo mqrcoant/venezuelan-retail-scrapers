@@ -27,14 +27,14 @@ def get_exchange_rate():
         "order": "effective_date.desc",
         "limit": 1
     }
-    r = requests.get(url, headers=HEADERS, params=params)
+    r = requests.get(url, headers=HEADERS, params=params, timeout=20)
+    r.raise_for_status()
     data = r.json()
     if data and "usd_to_ves_rate" in data[0]:
         rate = float(data[0]["usd_to_ves_rate"])
         print(f"[*] Tasa de cambio cargada: 1 USD = {rate:.2f} VES")
         return rate
-    print("[!] No se pudo obtener la tasa, usando fallback de 1.0")
-    return 1.0
+    raise RuntimeError("No se obtuvo una tasa de cambio válida; se cancela la exportación")
 
 def limpiar_ean(ean_raw):
     """Elimina absolutamente cualquier espacio en blanco dentro del string."""
@@ -48,7 +48,7 @@ def exportar_xlsx(nombre_archivo, datos, columnas):
     """Función auxiliar para exportar las listas a XLSX en la ruta absoluta especificada"""
     if datos:
         # 1. Ruta absoluta de Kuantip
-        carpeta = r"C:\\Users\\USUARIO\\Documents\\1. Work\\Kuantip\\scripts\\kalea-final"
+        carpeta = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finales", "kalea")
         os.makedirs(carpeta, exist_ok=True)
         
         # 2. Construir la ruta completa
@@ -78,10 +78,9 @@ def scrape_kalea_catalog(store_name, store_id, rate):
             "offset": offset
         }
         
-        res = requests.get(f"{API_BASE}/products", headers=HEADERS, params=params)
+        res = requests.get(f"{API_BASE}/products", headers=HEADERS, params=params, timeout=30)
         if res.status_code != 200:
-            print(f"[!] Error HTTP {res.status_code}: {res.text}")
-            break
+            raise RuntimeError(f"Error HTTP {res.status_code} en Kalea, sede {store_name}, offset {offset}")
             
         data = res.json()
         if not data:
@@ -142,7 +141,8 @@ def scrape_kalea_catalog(store_name, store_id, rate):
                 "brand": item.get("brand"),
                 "department": item.get("department"),
                 "category": item.get("group_name"),
-                "quantity": stock_actual,
+            "quantity": stock_actual,
+            "stock": stock_actual > 0,
                 "price_base_bs": round(price_base_bs, 2),
                 "price_final_bs": round(price_final_bs, 2),
                 "price_base_ref": round(price_base_ref, 2),
@@ -175,8 +175,22 @@ def scrape_kalea_catalog(store_name, store_id, rate):
     exportar_xlsx(f"kalea_{store_name}_estandar.xlsx", productos_estandar, columnas)
     exportar_xlsx(f"kalea_{store_name}_ecom.xlsx", productos_ecom, columnas)
     exportar_xlsx(f"kalea_{store_name}_faltantes.xlsx", productos_faltantes, columnas)
+    return [
+        {**producto, "sede": store_name, "tipo": tipo}
+        for tipo, productos in (("estandar", productos_estandar),
+                                ("ecom", productos_ecom),
+                                ("faltantes", productos_faltantes))
+        for producto in productos
+    ]
 
 if __name__ == "__main__":
     current_rate = get_exchange_rate()
+    catalogo_total = []
     for name, s_id in STORES.items():
-        scrape_kalea_catalog(name, s_id, current_rate)
+        catalogo_total.extend(scrape_kalea_catalog(name, s_id, current_rate))
+    if catalogo_total:
+        carpeta = os.path.join(os.path.dirname(os.path.dirname(__file__)), "finales", "kalea")
+        os.makedirs(carpeta, exist_ok=True)
+        pd.DataFrame(catalogo_total).to_excel(
+            os.path.join(carpeta, "kalea_catalogo_completo.xlsx"), index=False
+        )

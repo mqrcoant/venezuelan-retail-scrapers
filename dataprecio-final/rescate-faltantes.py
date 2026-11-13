@@ -33,7 +33,7 @@ def extraer_tienda_rescate(context, nombre_tienda, pagina_inicio):
     
     try:
         page.goto(url_tienda)
-        page.wait_for_selector(".product", timeout=20000)
+        page.wait_for_selector(".product:not(.is-skeleton)", timeout=20000)
         time.sleep(3)
     except Exception as e:
         print(f"[!] Error al cargar: {e}")
@@ -87,7 +87,7 @@ def extraer_tienda_rescate(context, nombre_tienda, pagina_inicio):
     # ==========================================
     # BUCLE NORMAL DE EXTRACCIÓN
     # ==========================================
-    selector_tarjeta = ".product"
+    selector_tarjeta = ".product:not(.is-skeleton)"
     
     for pagina_actual in range(pagina_inicio, total_paginas + 1):
         print(f"  - Extrayendo página {pagina_actual} de {total_paginas}...")

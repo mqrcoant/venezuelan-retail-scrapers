@@ -6,6 +6,10 @@ import time
 import re
 import requests
 import concurrent.futures
+from pathlib import Path
+
+FINAL_DIR = Path(__file__).resolve().parents[1] / "finales"
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def iniciar_navegador():
     print("Iniciando navegador Thorium (undetected_chromedriver)...")
@@ -144,12 +148,12 @@ if __name__ == "__main__":
                 # CORRECCIÓN EXTRA: Forzar la eliminación de duplicados exactos usando pandas por si acaso
                 df = df.drop_duplicates(subset=['Nombre'])
                 
-                nombre_excel = "mibodega_maestro_total.xlsx"
+                nombre_excel = FINAL_DIR / "mibodega_maestro_total.xlsx"
                 try:
                     df.to_excel(nombre_excel, index=False)
                     print(f"\n¡Éxito total! {len(df)} productos exportados a {nombre_excel}.")
                 except ImportError:
-                    nombre_csv = "mibodega_maestro_total.csv"
+                    nombre_csv = FINAL_DIR / "mibodega_maestro_total.csv"
                     df.to_csv(nombre_csv, index=False, sep=';', decimal=',')
                     print(f"\n¡Éxito total! Exportado a {nombre_csv} (instala openpyxl para exportar a excel).")
             else:

@@ -4,6 +4,10 @@ import pandas as pd
 from datetime import datetime
 import time
 import re
+from pathlib import Path
+
+FINAL_DIR = Path(__file__).resolve().parents[1] / "finales"
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def iniciar_navegador():
     print("Iniciando navegador Thorium (undetected_chromedriver)...")
@@ -170,12 +174,12 @@ if __name__ == "__main__":
             columnas = ['EAN', 'Nombre', 'Categoria', 'Precio Paquete REF', 'Precio por KG REF', 'Imagen URL', 'Fecha de Extraccion']
             df = df[columnas]
             
-            nombre_excel = "riomarket_maestro_total.xlsx"
+            nombre_excel = FINAL_DIR / "riomarket_maestro_total.xlsx"
             try:
                 df.to_excel(nombre_excel, index=False)
                 print(f"\n¡Éxito total! Datos exportados a {nombre_excel}.")
             except ImportError:
-                df.to_csv("riomarket_maestro_total.csv", index=False, sep=';', decimal=',')
+                df.to_csv(FINAL_DIR / "riomarket_maestro_total.csv", index=False, sep=';', decimal=',')
                 print("\nExportado a CSV (instala openpyxl para exportar a excel).")
         else:
             print("\nNo se encontraron datos.")

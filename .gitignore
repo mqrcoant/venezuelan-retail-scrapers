@@ -2,10 +2,9 @@
 __pycache__/
 *.py[cod]
 *.log
+logs/
+*.tmp.xlsx
 .env
 .env.*
-kuantip_prods.db
-kuantip_branches.csv
-kuantip_merchants.csv
-kuantip_productos_huerfanos_completo.csv
-ESTANDARIZADO_kuantip_productos_huerfanos_completo.csv
+backoffice/*.db
+backoffice/*.csv
