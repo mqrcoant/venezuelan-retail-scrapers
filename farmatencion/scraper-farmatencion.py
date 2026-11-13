@@ -1,0 +1,374 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+import pandas as pd
+import time
+import re
+
+URL = "https://datastudio.google.com/u/0/reporting/f7732857-56bb-4557-8433-6cee0b5cd775/page/V2xOF"
+
+# Ajustes
+WAIT = 15
+PAUSA_SELECCION = 1.2
+PAUSA_SCROLL = 0.7
+MAX_SCROLL_SIN_NUEVOS = 12
+
+def txt(el):
+    try:
+        return el.text.strip()
+    except Exception:
+        return ""
+
+def crear_driver():
+    opciones = Options()
+    opciones.binary_location = r"C:\Users\USUARIO\AppData\Local\Thorium\Application\thorium.exe"
+    opciones.add_argument("--no-sandbox")
+    opciones.add_argument("--disable-dev-shm-usage")
+    opciones.add_argument("--start-maximized")
+
+    servicio = Service(
+        ChromeDriverManager(driver_version="138.0.7204.303").install()
+    )
+    return webdriver.Chrome(service=servicio, options=opciones)
+
+def esperar_reporte(driver):
+    WebDriverWait(driver, WAIT).until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//div[contains(@class,'item-single')]")
+        )
+    )
+
+def obtener_items_visibles(driver):
+    """
+    Devuelve [(nombre, elemento), ...] de los productos actualmente renderizados.
+    Looker Studio virtualiza la lista: no todos los productos existen simultáneamente en el DOM.
+    """
+    salida = []
+    for item in driver.find_elements(By.XPATH, "//div[contains(@class,'item-single')]"):
+        try:
+            spans = item.find_elements(By.XPATH, ".//span[contains(@class,'dimension-value')]")
+            if not spans:
+                continue
+            nombre = spans[0].text.strip()
+            if nombre:
+                salida.append((nombre, item))
+        except StaleElementReferenceException:
+            continue
+    return salida
+
+def buscar_scrollable_ancestor(driver, element):
+    """
+    Sube por los ancestros del item y localiza el primer contenedor realmente scrollable.
+    Esto es mucho más estable que mandar ARROW_DOWN al active_element.
+    """
+    return driver.execute_script("""
+        let el = arguments[0];
+        while (el) {
+            const s = window.getComputedStyle(el);
+            const oy = s.overflowY;
+            if ((oy === 'auto' || oy === 'scroll') &&
+                el.scrollHeight > el.clientHeight + 5) {
+                return el;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    """, element)
+
+def scroll_lista(driver, scrollbox, cantidad=None):
+    if cantidad is None:
+        # Avanza algo menos de una pantalla para mantener solapamiento entre lotes.
+        cantidad = driver.execute_script(
+            "return Math.max(120, Math.floor(arguments[0].clientHeight * 0.72));",
+            scrollbox
+        )
+    antes = driver.execute_script("return arguments[0].scrollTop;", scrollbox)
+    driver.execute_script(
+        "arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[1], "
+        "arguments[0].scrollHeight);",
+        scrollbox, cantidad
+    )
+    time.sleep(PAUSA_SCROLL)
+    despues = driver.execute_script("return arguments[0].scrollTop;", scrollbox)
+    maximo = driver.execute_script(
+        "return arguments[0].scrollHeight - arguments[0].clientHeight;", scrollbox
+    )
+    return antes, despues, maximo
+
+def esperar_cambio_tabla(driver, firma_anterior=None, timeout=8):
+    """
+    Espera a que la tabla cambie tras seleccionar un producto.
+    Evita leer datos del producto anterior y maneja los redibujados del DOM.
+    """
+    def firma_actual(d):
+        try:
+            celdas = d.find_elements(
+                By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
+            )
+            vals = []
+            for e in celdas:
+                texto = e.text.strip()
+                if texto:
+                    vals.append(texto)
+            
+            firma = "||".join(vals[:16])
+            
+            if not vals:
+                return False
+            if firma_anterior is None or firma != firma_anterior:
+                return firma
+            return False
+            
+        except StaleElementReferenceException:
+            # Si el DOM se redibuja a mitad de la lectura, devolvemos False
+            # para que WebDriverWait lo vuelva a intentar inmediatamente.
+            return False
+
+    try:
+        return WebDriverWait(driver, timeout).until(firma_actual)
+    except TimeoutException:
+        return None
+
+def obtener_firma_tabla(driver):
+    vals = [
+        txt(e)
+        for e in driver.find_elements(
+            By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
+        )
+    ]
+    vals = [v for v in vals if v]
+    return "||".join(vals[:16])
+
+def extraer_filas_tabla(driver, producto):
+    """
+    Intenta leer TODAS las filas renderizadas de la tabla.
+    Para la captura mostrada, el pie dice 1-4 / 4; en ese caso las 4 filas
+    están renderizadas y se extraen todas.
+
+    Si un producto llegara a tener más filas que las visibles y la tabla fuese
+    virtualizada/paginada, la función desplaza internamente la tabla y deduplica.
+    """
+    filas = []
+    vistos = set()
+    sin_nuevos = 0
+
+    # Intentar localizar un contenedor scrollable partiendo de una celda.
+    celdas0 = driver.find_elements(
+        By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
+    )
+    scrollbox = buscar_scrollable_ancestor(driver, celdas0[0]) if celdas0 else None
+
+    for _ in range(50):
+        celdas = driver.find_elements(
+            By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
+        )
+        valores = [txt(c) for c in celdas]
+
+        nuevos = 0
+        # El reporte tiene 4 columnas: Zona, Principio Activo, Precio, Dispo.
+        for i in range(0, len(valores) - 3, 4):
+            zona, principio, precio, dispo = valores[i:i+4]
+
+            # Filtrar encabezados / vacíos.
+            if not zona or zona.lower() == "zona":
+                continue
+
+            clave = (zona, principio, precio, dispo)
+            if clave in vistos:
+                continue
+
+            vistos.add(clave)
+            filas.append({
+                "Producto": producto,
+                "Zona": zona,
+                "Principio Activo": principio,
+                "Precio $": precio,
+                "Dispo.": dispo,
+            })
+            nuevos += 1
+
+        if not scrollbox:
+            break
+
+        if nuevos == 0:
+            sin_nuevos += 1
+        else:
+            sin_nuevos = 0
+
+        antes, despues, maximo = scroll_lista(driver, scrollbox)
+
+        # Ya llegamos abajo o no se movió.
+        if abs(despues - antes) < 1 or despues >= maximo - 2:
+            # una última lectura después del scroll final
+            time.sleep(0.3)
+            celdas = driver.find_elements(
+                By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
+            )
+            valores = [txt(c) for c in celdas]
+            for i in range(0, len(valores) - 3, 4):
+                zona, principio, precio, dispo = valores[i:i+4]
+                if not zona or zona.lower() == "zona":
+                    continue
+                clave = (zona, principio, precio, dispo)
+                if clave not in vistos:
+                    vistos.add(clave)
+                    filas.append({
+                        "Producto": producto,
+                        "Zona": zona,
+                        "Principio Activo": principio,
+                        "Precio $": precio,
+                        "Dispo.": dispo,
+                    })
+            break
+
+        if sin_nuevos >= 4:
+            break
+
+    return filas
+
+def obtener_contador_tabla(driver):
+    """
+    Busca textos tipo '1 - 4 / 4' o '1-4 / 4'.
+    Es solo diagnóstico; no depende de él la extracción.
+    """
+    patron = re.compile(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)")
+    for el in driver.find_elements(By.XPATH, "//*[contains(text(), '/')]"):
+        t = txt(el)
+        m = patron.search(t)
+        if m:
+            return tuple(map(int, m.groups()))
+    return None
+
+def extraer_catalogo():
+    driver = crear_driver()
+    datos_completos = []
+    productos_procesados = set()
+
+    try:
+        driver.get(URL)
+        print("Esperando a que cargue el reporte...")
+        esperar_reporte(driver)
+        time.sleep(2)
+
+        items = obtener_items_visibles(driver)
+        if not items:
+            raise RuntimeError("No se encontraron productos en la lista.")
+
+        scrollbox = buscar_scrollable_ancestor(driver, items[0][1])
+        if scrollbox is None:
+            raise RuntimeError(
+                "No pude localizar el contenedor scrollable de la lista de productos."
+            )
+
+        # Empezar desde arriba de forma determinista.
+        driver.execute_script("arguments[0].scrollTop = 0;", scrollbox)
+        time.sleep(0.8)
+
+        scroll_sin_nuevos = 0
+
+        while True:
+            items = obtener_items_visibles(driver)
+            nombres_visibles = [n for n, _ in items]
+            nuevos_en_lote = [n for n in nombres_visibles if n not in productos_procesados]
+
+            if nuevos_en_lote:
+                scroll_sin_nuevos = 0
+
+                # Procesar por nombre y volver a localizar el elemento antes de cada click.
+                # Esto evita referencias stale cuando Looker re-renderiza el control.
+                for nombre in nuevos_en_lote:
+                    if nombre in productos_procesados:
+                        continue
+
+                    # Reubicar el item por texto entre los actualmente visibles.
+                    candidato = None
+                    for nom, el in obtener_items_visibles(driver):
+                        if nom == nombre:
+                            candidato = el
+                            break
+
+                    if candidato is None:
+                        continue
+
+                    print(f"-> {len(productos_procesados)+1}: {nombre}")
+
+                    firma_previa = obtener_firma_tabla(driver)
+
+                    # Llevarlo al centro del viewport del control y hacer click.
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+                        candidato
+                    )
+                    time.sleep(0.15)
+                    driver.execute_script("arguments[0].click();", candidato)
+
+                    esperar_cambio_tabla(driver, firma_previa, timeout=8)
+                    time.sleep(PAUSA_SELECCION)
+
+                    filas = extraer_filas_tabla(driver, nombre)
+                    contador = obtener_contador_tabla(driver)
+
+                    if contador:
+                        ini, fin, total = contador
+                        print(f"   tabla: pie {ini}-{fin}/{total}; filas capturadas={len(filas)}")
+                        if len(filas) < total:
+                            print(
+                                f"   AVISO: el pie indica {total} filas, "
+                                f"pero se capturaron {len(filas)}."
+                            )
+                    else:
+                        print(f"   filas capturadas={len(filas)}")
+
+                    datos_completos.extend(filas)
+                    productos_procesados.add(nombre)
+
+            else:
+                antes, despues, maximo = scroll_lista(driver, scrollbox)
+                scroll_sin_nuevos += 1
+
+                print(
+                    f"Scroll lista: {antes:.0f} -> {despues:.0f} "
+                    f"(máx {maximo:.0f}); sin nuevos={scroll_sin_nuevos}"
+                )
+
+                # Fin real: estamos abajo y tras varios intentos no aparecen nombres nuevos.
+                if (despues >= maximo - 2 or abs(despues - antes) < 1) and \
+                   scroll_sin_nuevos >= 3:
+                    print("Fin de la lista detectado.")
+                    break
+
+                if scroll_sin_nuevos >= MAX_SCROLL_SIN_NUEVOS:
+                    print("Corte de seguridad: demasiados scrolls sin productos nuevos.")
+                    break
+
+        print(f"\nProductos procesados: {len(productos_procesados)}")
+        print(f"Filas totales extraídas: {len(datos_completos)}")
+
+    finally:
+        if datos_completos:
+            df = pd.DataFrame(datos_completos)
+
+            # Deduplicación defensiva
+            df = df.drop_duplicates(
+                subset=["Producto", "Zona", "Principio Activo", "Precio $", "Dispo."]
+            ).reset_index(drop=True)
+
+            df["Precio $"] = pd.to_numeric(
+                df["Precio $"].astype(str).str.replace(",", ".", regex=False),
+                errors="coerce"
+            )
+            df["Dispo."] = pd.to_numeric(df["Dispo."], errors="coerce")
+
+            salida = "catalogo_completo_farmatencion.xlsx"
+            df.to_excel(salida, index=False)
+            print(f"Excel creado: {salida} | {len(df)} filas")
+
+        driver.quit()
+
+if __name__ == "__main__":
+    extraer_catalogo()
