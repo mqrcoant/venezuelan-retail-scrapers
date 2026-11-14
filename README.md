@@ -6,6 +6,7 @@ Este repositorio tiene como raíz la antigua carpeta `scripts`. El commit `72e8c
 
 - `pipeline.py`: ejecuta una tienda o todas, comprueba que cada salida sea de la corrida nueva y convierte CSV finales a XLSX sin transformar EAN/SKU en números.
 - `finales/`: resultados nuevos listos para revisar. Las tiendas con múltiples archivos usan una subcarpeta (`kalea`, `dataprecio`, `emporium`, `farmago`, `locatel`, `saas`, `farma-actual`, `tucentralonline`).
+- [`finales/README.md`](finales/README.md): índice que distingue cada catálogo nuevo del histórico conservado en el commit primitivo.
 - Carpeta de cada tienda: scraper, pruebas históricas y archivos de trabajo. Los archivos antiguos que siguen allí no representan necesariamente una corrida actual.
 - `logs/`: un log por script y resumen JSON por corrida; no se publica.
 - `backoffice/` y `experimento-iva/`: trabajos exteriores a tiendas, organizados y excluidos de las corridas.
