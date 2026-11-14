@@ -16,7 +16,7 @@ COLUMNA_PRECIO = 'precio_bs'  # <--- Ajustar si se llama diferente (ej: 'precio_
 def limpiar_precio(precio_str):
     """Limpia el formato '1.131,08 Bs' y lo convierte a float"""
     if pd.isna(precio_str):
-        return 0.0
+        return float('nan')
     p = str(precio_str)
     # Quitar cualquier texto como 'Bs', letras o espacios
     p = re.sub(r'[^\d,\.]', '', p)
@@ -30,12 +30,12 @@ def limpiar_precio(precio_str):
     try:
         return float(p)
     except ValueError:
-        return 0.0
+        return float('nan')
 
 def main():
     print(f"Procesando {ARCHIVO_ENTRADA}...")
     try:
-        df = pd.read_csv(ARCHIVO_ENTRADA)
+        df = pd.read_csv(ARCHIVO_ENTRADA, dtype={'sku_interno': str})
         
         if COLUMNA_PRECIO not in df.columns:
             print(f"Error: La columna '{COLUMNA_PRECIO}' no existe. Columnas disponibles: {list(df.columns)}")
@@ -43,12 +43,16 @@ def main():
 
         # 1. Convertir texto a número
         df['precio_con_iva_bs'] = df[COLUMNA_PRECIO].apply(limpiar_precio)
+        df = df.loc[df['precio_con_iva_bs'] > 0].copy()
 
-        # 2. Calcular la base en Bolívares (sin el 16% de IVA)
-        df['precio_base_bs'] = df['precio_con_iva_bs'] / 1.16
-
-        # 3. Calcular el precio base Ref (Dólares)
-        df['precio_base_ref'] = round(df['precio_base_bs'] / TASA_BCV, 2)
+        # La tienda no publica el IVA individual en el listado ni en el detalle.
+        # Solo calcular base si un futuro scraper aporta una tasa explícita.
+        tasas = pd.to_numeric(df['iva_pct'], errors='coerce') if 'iva_pct' in df else pd.Series(float('nan'), index=df.index)
+        conocidas = tasas.isin([0, 16])
+        df['estado_iva'] = conocidas.map({True: 'informado', False: 'no_informado'})
+        df['tasa_bcv'] = TASA_BCV
+        df['precio_base_bs'] = (df['precio_con_iva_bs'] / (1 + tasas / 100)).where(conocidas)
+        df['precio_base_ref'] = (df['precio_base_bs'] / TASA_BCV).round(2)
 
         # Exportar el nuevo CSV
         df.to_csv(ARCHIVO_SALIDA, index=False)

@@ -39,8 +39,10 @@ def scrapear_farmacia_actual():
         res = requests.get(url, headers=headers, timeout=20)
         
         if res.status_code != 200:
-            print("Límite de ruta alcanzado.")
-            break
+            if res.status_code == 404 and pagina > 1:
+                print("Límite de ruta alcanzado.")
+                break
+            raise requests.HTTPError(f"Farma Actual devolvió {res.status_code} en {url}")
             
         soup = BeautifulSoup(res.text, 'html.parser')
         tarjetas = soup.find_all('div', class_='tp-product-item')
