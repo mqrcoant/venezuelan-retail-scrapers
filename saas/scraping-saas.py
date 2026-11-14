@@ -2,7 +2,13 @@ import datetime
 import requests
 import time
 import csv
+import json
+import os
+from pathlib import Path
 from urllib.parse import urlparse
+
+
+CHECKPOINT = Path(__file__).resolve().parent.parent / 'logs' / 'saas_checkpoint.jsonl'
 
 
 def obtener_arbol_categorias():
@@ -61,12 +67,20 @@ def scrapear_subcategoria(path_categoria, departamento, subcategoria):
         url = f"https://www.farmaciasaas.com/api/catalog_system/pub/products/search/{path_categoria}?_from={inicio}&_to={inicio + paso}"
         
         time.sleep(1)  # Pausa por cortesía
-        respuesta = requests.get(url, headers=headers, timeout=20)
+        for intento in range(3):
+            try:
+                respuesta = requests.get(url, headers=headers, timeout=20)
+                if respuesta.status_code in (429, 500, 502, 503, 504):
+                    raise requests.HTTPError(f'{respuesta.status_code} en {url}')
+                break
+            except requests.RequestException:
+                if intento == 2:
+                    raise
+                time.sleep(3 * (intento + 1))
         
         # Aceptamos 200 y 206 (Contenido Parcial)
         if respuesta.status_code not in [200, 206]:
-            print(f"     Error {respuesta.status_code} en la ruta. Saltando.")
-            break
+            raise requests.HTTPError(f'{respuesta.status_code} en {url}')
             
         datos = respuesta.json()
         
@@ -96,15 +110,14 @@ def scrapear_subcategoria(path_categoria, departamento, subcategoria):
                 # Iteramos sobre TODOS los vendedores para encontrar el precio activo
                 for vendedor in item.get('sellers', []):
                     oferta = vendedor.get('commertialOffer', {})
-                    p_base = oferta.get('Price', 0)
-                    impuesto = oferta.get('Tax', 0)
+                    precio_visible = oferta.get('Price', 0)
                     
-                    if p_base > 0:
-                        precio_base = p_base
-                        precio_final = round(p_base + impuesto, 2)
+                    if precio_visible > 0:
+                        # VTEX Price ya es el precio mostrado en la ficha.
+                        precio_final = precio_visible
                         break  # Encontramos el precio real, rompemos el ciclo de vendedores
                 
-                if precio_base:
+                if precio_final is not None:
                     break
                         
             fecha_extraccion = datetime.datetime.now().strftime("%d-%m-%Y")
@@ -128,18 +141,25 @@ def scrapear_subcategoria(path_categoria, departamento, subcategoria):
     return productos_extraidos
 
 
-def guardar_saas_csv(datos, nombre_archivo_completos="prods_saas.csv", nombre_archivo_faltantes="saas-faltantes.csv"):
+def guardar_saas_csv(datos, nombre_archivo_completos="prods_saas.csv", nombre_archivo_faltantes="saas-faltantes.csv", nombre_archivo_sin_precio="saas-sin-precio.csv"):
     if not datos:
         print("No hay datos para guardar.")
         return
 
     productos_completos = []
     productos_faltantes = []
+    productos_sin_precio = []
     
     # Para deduplicar los que sí tienen sku
     skus_vistos = set()
 
     for prod in datos:
+        # Compatibilidad con checkpoints anteriores: allí precio_base contenía
+        # VTEX Price y precio_con_iva contenía el precio sumado a Tax.
+        if prod.get('precio_base') is not None:
+            prod['precio_con_iva'] = prod['precio_base']
+            prod['precio_base'] = None
+        prod['estado_iva'] = 'no_informado'
         sku = prod.get('sku_interno')
         ean = prod.get('ean')
         
@@ -147,12 +167,15 @@ def guardar_saas_csv(datos, nombre_archivo_completos="prods_saas.csv", nombre_ar
         if sku and ean:
             if sku not in skus_vistos:
                 skus_vistos.add(sku)
-                productos_completos.append(prod)
+                if prod.get('precio_con_iva') is not None and float(prod['precio_con_iva']) > 0:
+                    productos_completos.append(prod)
+                else:
+                    productos_sin_precio.append(prod)
         else:
             # Si falta el SKU o falta el EAN, se va a la lista de revisión
             productos_faltantes.append(prod)
 
-    cabeceras = ['departamento', 'subcategoria', 'marca', 'ean', 'sku_interno', 'nombre', 'precio_base', 'precio_con_iva', 'imagen', 'fecha_extraccion']
+    cabeceras = ['departamento', 'subcategoria', 'marca', 'ean', 'sku_interno', 'nombre', 'precio_base', 'precio_con_iva', 'estado_iva', 'imagen', 'fecha_extraccion']
     
     if productos_completos:
         with open(nombre_archivo_completos, mode='w', newline='', encoding='utf-8') as archivo_csv:
@@ -167,6 +190,13 @@ def guardar_saas_csv(datos, nombre_archivo_completos="prods_saas.csv", nombre_ar
             escritor.writeheader()
             escritor.writerows(productos_faltantes)
         print(f"¡Se guardaron {len(productos_faltantes)} productos INCOMPLETOS (sin SKU o EAN) en: {nombre_archivo_faltantes}")
+
+    if productos_sin_precio:
+        with open(nombre_archivo_sin_precio, mode='w', newline='', encoding='utf-8') as archivo_csv:
+            escritor = csv.DictWriter(archivo_csv, fieldnames=cabeceras)
+            escritor.writeheader()
+            escritor.writerows(productos_sin_precio)
+        print(f"Se guardaron {len(productos_sin_precio)} productos con SKU y EAN, pero sin precio: {nombre_archivo_sin_precio}")
 
 
 if __name__ == "__main__":
@@ -185,12 +215,29 @@ if __name__ == "__main__":
     
     print(f"Se identificaron {len(rutas_a_scrapear)} subcategorías en la tienda.\n")
     
+    CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+    reanudar = os.environ.get('SAAS_RESUME') == '1'
+    if not reanudar:
+        CHECKPOINT.unlink(missing_ok=True)
+    rutas_guardadas = {}
+    if CHECKPOINT.exists():
+        with CHECKPOINT.open(encoding='utf-8') as archivo:
+            for linea in archivo:
+                registro = json.loads(linea)
+                rutas_guardadas[registro['path']] = registro['productos']
     todos_los_productos_saas = []
     
     # 2. Iterar sobre cada subcategoría pequeña
     for ruta in rutas_a_scrapear:
-        datos_ruta = scrapear_subcategoria(ruta['path'], ruta['departamento'], ruta['subcategoria'])
+        if ruta['path'] in rutas_guardadas:
+            datos_ruta = rutas_guardadas[ruta['path']]
+            print(f"Reanudando {ruta['path']}: {len(datos_ruta)} productos guardados")
+        else:
+            datos_ruta = scrapear_subcategoria(ruta['path'], ruta['departamento'], ruta['subcategoria'])
+            with CHECKPOINT.open('a', encoding='utf-8') as archivo:
+                archivo.write(json.dumps({'path': ruta['path'], 'productos': datos_ruta}, ensure_ascii=False) + '\n')
         todos_los_productos_saas.extend(datos_ruta)
         
     # 3. Guardar y deduplicar
     guardar_saas_csv(todos_los_productos_saas)
+    CHECKPOINT.unlink(missing_ok=True)

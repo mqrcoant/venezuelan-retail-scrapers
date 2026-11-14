@@ -2,6 +2,29 @@ import requests
 from bs4 import BeautifulSoup
 import csv
 import concurrent.futures
+import json
+import os
+import re
+import time
+from pathlib import Path
+
+CHECKPOINT = Path(__file__).resolve().parent.parent / 'logs' / 'emporium_checkpoint.json'
+CSV_PATH = Path(__file__).resolve().parent / 'catalogo_emporium.csv'
+BARCODES_PATH = CHECKPOINT.parent / 'emporium_barcodes_historicos.json'
+barcodes_cache = {}
+
+
+def get_con_reintentos(url, timeout=40):
+    for intento in range(3):
+        try:
+            respuesta = session.get(url, timeout=timeout)
+            if respuesta.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f'HTTP {respuesta.status_code} en {url}')
+            return respuesta
+        except requests.RequestException:
+            if intento == 2:
+                raise
+            time.sleep(2 * (intento + 1))
 
 BASE_URL = "https://automercadosemporium.com"
 
@@ -34,10 +57,13 @@ CATEGORIAS = {
 def extraer_detalle_producto(producto):
     """Worker para multithreading: Visita la URL de detalle usando la sesión global."""
     url_detalle = f"{BASE_URL}/Product.php?code={producto['codigo_interno']}"
+    if producto['codigo_interno'] in barcodes_cache:
+        producto['barcode'] = barcodes_cache[producto['codigo_interno']]
+        return producto
     
     try:
         # Usamos session.get en lugar de requests.get
-        response = session.get(url_detalle, timeout=10)
+        response = get_con_reintentos(url_detalle, timeout=15)
         
         # Opcional: imprimir el status_code en caso de error para depurar
         if response.status_code != 200:
@@ -60,22 +86,42 @@ def extraer_detalle_producto(producto):
 def scrapear_catalogo():
     # Hacemos una petición inicial a la home para capturar cualquier cookie necesaria
     print("Inicializando sesión y capturando cookies...")
-    session.get(BASE_URL, timeout=20)
+    get_con_reintentos(BASE_URL).raise_for_status()
 
-    with open('catalogo_emporium.csv', mode='w', newline='', encoding='utf-8') as csv_file:
+    CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+    if BARCODES_PATH.exists():
+        barcodes_cache.update(json.loads(BARCODES_PATH.read_text(encoding='utf-8')))
+    if CSV_PATH.exists():
+        with CSV_PATH.open(newline='', encoding='utf-8-sig') as entrada:
+            barcodes_cache.update({fila['codigo_interno']: fila['barcode'] for fila in csv.DictReader(entrada)
+                                   if re.fullmatch(r'\d{8,14}', fila['barcode'] or '')})
+    print(f'{len(barcodes_cache)} códigos de barras históricos disponibles')
+    reanudar = os.environ.get('EMPORIUM_RESUME') == '1' and CHECKPOINT.exists() and CSV_PATH.exists()
+    estado = json.loads(CHECKPOINT.read_text(encoding='utf-8')) if reanudar else {'categoria': 0, 'pagina': 1}
+    vistos = set()
+    if reanudar:
+        with CSV_PATH.open(newline='', encoding='utf-8') as entrada:
+            vistos = {fila['codigo_interno'] for fila in csv.DictReader(entrada)}
+        print(f'Reanudando desde {estado}; {len(vistos)} productos guardados')
+
+    with CSV_PATH.open(mode='a' if reanudar else 'w', newline='', encoding='utf-8') as csv_file:
         writer = csv.writer(csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(['codigo_interno', 'barcode', 'nombre', 'precio_base_ref', 'precio_final_ref', 'categoria'])
+        if not reanudar:
+            writer.writerow(['codigo_interno', 'barcode', 'nombre', 'precio_base_ref', 'precio_final_ref', 'categoria'])
 
-        for cat_code, cat_name in CATEGORIAS.items():
+        for indice, (cat_code, cat_name) in enumerate(CATEGORIAS.items()):
+            if indice < estado['categoria']:
+                continue
             print(f"\n--- Iniciando extracción de categoría: {cat_name} ---")
-            page = 1
+            page = estado['pagina'] if indice == estado['categoria'] else 1
             has_next_page = True
 
             while has_next_page:
                 url = f"{BASE_URL}/Products.php?cat={cat_code}&suc=02&Page={page}"
                 print(f"Obteniendo lista de productos - Página {page}...")
                 
-                response = session.get(url, timeout=20)
+                response = get_con_reintentos(url)
+                response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 productos_html = soup.find_all('div', class_='groups-product-item')
                 
@@ -90,6 +136,8 @@ def scrapear_catalogo():
                         continue
                         
                     codigo_interno = btn_add['onclick'].split("'")[1]
+                    if codigo_interno in vistos:
+                        continue
                     nombre_tag = prod.find('p', id='nombre_producto')
                     precio_tag = prod.find('p', id='tag_precio_producto')
                     
@@ -114,13 +162,21 @@ def scrapear_catalogo():
                         res['codigo_interno'], res['barcode'], res['nombre'], 
                         res['precio_base_ref'], res['precio_final_ref'], res['categoria']
                     ])
+                    vistos.add(res['codigo_interno'])
                     print(f"Guardado: {res['nombre'][:30]}... | ${res['precio_base_ref']} | Cod: {res['barcode']}")
 
                 btn_siguiente = soup.find('div', class_='Siguiente')
                 if btn_siguiente and 'display: none' not in btn_siguiente.get('style', ''):
                     page += 1
+                    siguiente = {'categoria': indice, 'pagina': page}
                 else:
                     has_next_page = False
+                    siguiente = {'categoria': indice + 1, 'pagina': 1}
+                csv_file.flush()
+                CHECKPOINT.write_text(json.dumps(siguiente), encoding='utf-8')
+            if not productos_html:
+                CHECKPOINT.write_text(json.dumps({'categoria': indice + 1, 'pagina': 1}), encoding='utf-8')
+    CHECKPOINT.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     scrapear_catalogo()

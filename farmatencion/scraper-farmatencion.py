@@ -9,11 +9,15 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 import pandas as pd
 import time
 import re
+import json
+import os
+from pathlib import Path
 
 URL = "https://datastudio.google.com/u/0/reporting/f7732857-56bb-4557-8433-6cee0b5cd775/page/V2xOF"
+CHECKPOINT = Path(__file__).resolve().parent.parent / 'logs' / 'farmatencion_checkpoint.jsonl'
 
 # Ajustes
-WAIT = 15
+WAIT = 45
 PAUSA_SELECCION = 1.2
 PAUSA_SCROLL = 0.7
 MAX_SCROLL_SIN_NUEVOS = 12
@@ -30,11 +34,15 @@ def crear_driver():
     opciones.add_argument("--no-sandbox")
     opciones.add_argument("--disable-dev-shm-usage")
     opciones.add_argument("--start-maximized")
+    opciones.add_argument("--headless=new")
+    opciones.add_argument("--window-size=1280,900")
 
     servicio = Service(
         ChromeDriverManager(driver_version="138.0.7204.303").install()
     )
-    return webdriver.Chrome(service=servicio, options=opciones)
+    driver = webdriver.Chrome(service=servicio, options=opciones)
+    driver.set_page_load_timeout(90)
+    return driver
 
 def esperar_reporte(driver):
     WebDriverWait(driver, WAIT).until(
@@ -48,18 +56,18 @@ def obtener_items_visibles(driver):
     Devuelve [(nombre, elemento), ...] de los productos actualmente renderizados.
     Looker Studio virtualiza la lista: no todos los productos existen simultáneamente en el DOM.
     """
-    salida = []
-    for item in driver.find_elements(By.XPATH, "//div[contains(@class,'item-single')]"):
-        try:
-            spans = item.find_elements(By.XPATH, ".//span[contains(@class,'dimension-value')]")
-            if not spans:
-                continue
-            nombre = spans[0].text.strip()
-            if nombre:
-                salida.append((nombre, item))
-        except StaleElementReferenceException:
-            continue
-    return salida
+    return driver.execute_script("""
+        return [...document.querySelectorAll('div.item-single')]
+          .map(el => [(el.querySelector('span.dimension-value')?.textContent || '').trim(), el])
+          .filter(([nombre]) => nombre);
+    """)
+
+
+def valores_tabla(driver):
+    return driver.execute_script("""
+        return [...document.querySelectorAll('div.cell span.cell-value')]
+          .map(el => (el.textContent || '').trim());
+    """)
 
 def buscar_scrollable_ancestor(driver, element):
     """
@@ -107,18 +115,13 @@ def esperar_cambio_tabla(driver, firma_anterior=None, timeout=8):
     """
     def firma_actual(d):
         try:
-            celdas = d.find_elements(
-                By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
-            )
-            vals = []
-            for e in celdas:
-                texto = e.text.strip()
-                if texto:
-                    vals.append(texto)
+            vals = [v for v in valores_tabla(d) if v]
             
             firma = "||".join(vals[:16])
             
             if not vals:
+                if firma_anterior != '__NO_DATA__' and d.find_elements(By.XPATH, "//*[normalize-space()='No data']"):
+                    return '__NO_DATA__'
                 return False
             if firma_anterior is None or firma != firma_anterior:
                 return firma
@@ -135,13 +138,9 @@ def esperar_cambio_tabla(driver, firma_anterior=None, timeout=8):
         return None
 
 def obtener_firma_tabla(driver):
-    vals = [
-        txt(e)
-        for e in driver.find_elements(
-            By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
-        )
-    ]
-    vals = [v for v in vals if v]
+    vals = [v for v in valores_tabla(driver) if v]
+    if not vals and driver.find_elements(By.XPATH, "//*[normalize-space()='No data']"):
+        return '__NO_DATA__'
     return "||".join(vals[:16])
 
 def extraer_filas_tabla(driver, producto):
@@ -164,10 +163,7 @@ def extraer_filas_tabla(driver, producto):
     scrollbox = buscar_scrollable_ancestor(driver, celdas0[0]) if celdas0 else None
 
     for _ in range(50):
-        celdas = driver.find_elements(
-            By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
-        )
-        valores = [txt(c) for c in celdas]
+        valores = valores_tabla(driver)
 
         nuevos = 0
         # El reporte tiene 4 columnas: Zona, Principio Activo, Precio, Dispo.
@@ -206,10 +202,7 @@ def extraer_filas_tabla(driver, producto):
         if abs(despues - antes) < 1 or despues >= maximo - 2:
             # una última lectura después del scroll final
             time.sleep(0.3)
-            celdas = driver.find_elements(
-                By.XPATH, "//div[contains(@class,'cell')]//span[contains(@class,'cell-value')]"
-            )
-            valores = [txt(c) for c in celdas]
+            valores = valores_tabla(driver)
             for i in range(0, len(valores) - 3, 4):
                 zona, principio, precio, dispo = valores[i:i+4]
                 if not zona or zona.lower() == "zona":
@@ -236,18 +229,26 @@ def obtener_contador_tabla(driver):
     Busca textos tipo '1 - 4 / 4' o '1-4 / 4'.
     Es solo diagnóstico; no depende de él la extracción.
     """
-    patron = re.compile(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)")
-    for el in driver.find_elements(By.XPATH, "//*[contains(text(), '/')]"):
-        t = txt(el)
-        m = patron.search(t)
-        if m:
-            return tuple(map(int, m.groups()))
+    texto = driver.execute_script("return document.body.innerText")
+    coincidencias = re.findall(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)", texto)
+    if coincidencias:
+        return tuple(map(int, coincidencias[-1]))
     return None
 
 def extraer_catalogo():
     driver = crear_driver()
     datos_completos = []
     productos_procesados = set()
+    CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+    if os.environ.get('FARMATENCION_RESUME') != '1':
+        CHECKPOINT.unlink(missing_ok=True)
+    if CHECKPOINT.exists():
+        with CHECKPOINT.open(encoding='utf-8') as archivo:
+            for linea in archivo:
+                registro = json.loads(linea)
+                productos_procesados.add(registro['producto'])
+                datos_completos.extend(registro['filas'])
+    print(f'Reanudando: {len(productos_procesados)} productos guardados', flush=True)
 
     try:
         driver.get(URL)
@@ -326,6 +327,8 @@ def extraer_catalogo():
 
                     datos_completos.extend(filas)
                     productos_procesados.add(nombre)
+                    with CHECKPOINT.open('a', encoding='utf-8') as archivo:
+                        archivo.write(json.dumps({'producto': nombre, 'filas': filas}, ensure_ascii=False) + '\n')
 
             else:
                 antes, despues, maximo = scroll_lista(driver, scrollbox)
@@ -343,34 +346,34 @@ def extraer_catalogo():
                     break
 
                 if scroll_sin_nuevos >= MAX_SCROLL_SIN_NUEVOS:
-                    print("Corte de seguridad: demasiados scrolls sin productos nuevos.")
-                    break
+                    raise RuntimeError('Demasiados scrolls sin productos nuevos; se conserva el checkpoint')
 
         print(f"\nProductos procesados: {len(productos_procesados)}")
         print(f"Filas totales extraídas: {len(datos_completos)}")
 
     finally:
-        if datos_completos:
-            df = pd.DataFrame(datos_completos)
+        driver.quit()
+
+    if not datos_completos:
+        raise RuntimeError('El reporte no produjo filas')
+    df = pd.DataFrame(datos_completos)
 
             # Deduplicación defensiva
-            df = df.drop_duplicates(
-                subset=["Producto", "Zona", "Principio Activo", "Precio $", "Dispo."]
-            ).reset_index(drop=True)
+    df = df.drop_duplicates(
+        subset=["Producto", "Zona", "Principio Activo", "Precio $", "Dispo."]
+    ).reset_index(drop=True)
 
-            df["Precio $"] = pd.to_numeric(
-                df["Precio $"].astype(str).str.replace(",", ".", regex=False),
-                errors="coerce"
-            )
-            df["Dispo."] = pd.to_numeric(df["Dispo."], errors="coerce")
+    df["Precio $"] = pd.to_numeric(
+        df["Precio $"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce"
+    )
+    df["Dispo."] = pd.to_numeric(df["Dispo."], errors="coerce")
 
-            from pathlib import Path
-            salida = Path(__file__).resolve().parents[1] / "finales" / "catalogo_completo_farmatencion.xlsx"
-            salida.parent.mkdir(parents=True, exist_ok=True)
-            df.to_excel(salida, index=False)
-            print(f"Excel creado: {salida} | {len(df)} filas")
-
-        driver.quit()
+    salida = Path(__file__).resolve().parents[1] / "finales" / "catalogo_completo_farmatencion.xlsx"
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    df.to_excel(salida, index=False)
+    CHECKPOINT.unlink(missing_ok=True)
+    print(f"Excel creado: {salida} | {len(df)} filas")
 
 if __name__ == "__main__":
     extraer_catalogo()

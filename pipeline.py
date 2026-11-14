@@ -27,10 +27,10 @@ STORES = {
     "badan": ("badan/scraping-badan.py", ["maestro_badan_optimizado.csv"], ""),
     "bodegaBE": ("bodegaBE/scraper-bodegabe.py", [], ""),
     "celicor": ("celicor/scrpr-celicor-cast.py", ["celicor_la_castellana.csv"], ""),
-    "emporium": ("emporium/scraper-emporium.py", ["catalogo_emporium.csv"], ""),
+    "emporium": ("emporium/scraper-emporium.py", ["catalogo_emporium.csv"], "emporium"),
     "farma-actual": ("farma-actual/scraping-actual.py", ["maestro_tu_farmacia_actual.csv"], "farma-actual"),
     "farmago": ("farmago/scraping-farmago.py", ["maestro_farmago.csv", "pharmago-faltantes.csv"], "farmago"),
-    "farmatencion": ("farmatencion/scraper-farmatencion.py", [], ""),
+    "farmatencion": ("farmatencion/scraper-farmatencion-playwright.py", [], ""),
     "gama": ("gama/scr-gama.py", ["catalogo_gama_con_imagenes.csv"], ""),
     "kalea": ("kalea-final/scraper-kalea.py", [], "kalea"),
     "licores-mundiales": ("licores-mundiales/scraper-licmun.py", ["licores_mundiales.csv"], ""),
@@ -39,17 +39,20 @@ STORES = {
     "MiBodega": ("MiBodega/scraper-mibodega.py", [], ""),
     "plaza": ("plaza (falta precio base)/scraping-plazas.py", ["maestro_elplazas.csv"], ""),
     "rio-market": ("rio-market/scraper-rio.py", [], ""),
-    "saas": ("saas/scraping-saas.py", ["prods_saas.csv", "saas-faltantes.csv"], "saas"),
+    "saas": ("saas/scraping-saas.py", ["prods_saas.csv", "saas-faltantes.csv", "saas-sin-precio.csv"], "saas"),
     "superfreshmarket": ("superfreshmarket/scraping-superfreshmkt.py", ["maestro_super_fresh_market.csv"], ""),
-    "tucentralonline": ("tucentralonline/scraper-centralmad.py", [], ""),
+    "tucentralonline": ("tucentralonline/scraper-centralmad.py", [], "tucentralonline"),
     "tuzonamarket": ("tuzonamarket/scraping-tuzonamarket.py", ["productos_tuzonamarket_completo.csv"], ""),
     "viva": ("viva/scraper-viva.py", [], ""),
 }
 
 OPTIONAL_CSV = {"farmago": {"pharmago-faltantes.csv"},
                 "locatel": {"locatel-faltantes.csv"},
-                "saas": {"saas-faltantes.csv"}}
+                "saas": {"saas-faltantes.csv", "saas-sin-precio.csv"}}
 NEEDS_BCV = {"farmago", "locatel", "farma-actual"}
+RESUME_ENV = {"saas": "SAAS_RESUME", "emporium": "EMPORIUM_RESUME",
+              "superfreshmarket": "SUPERFRESH_RESUME", "tucentralonline": "TUCENTRAL_RESUME",
+              "farmatencion": "FARMATENCION_RESUME"}
 
 XLSX = {
     "bodegaBE": ["bodegon_beplus_maestro.xlsx"],
@@ -57,7 +60,7 @@ XLSX = {
     "kalea": ["kalea_catalogo_completo.xlsx"] + [f"kalea_{sede}_{tipo}.xlsx" for sede in ("caracas", "carabobo") for tipo in ("estandar", "ecom", "faltantes")],
     "MiBodega": ["mibodega_maestro_total.xlsx"],
     "rio-market": ["riomarket_maestro_total.xlsx"],
-    "tucentralonline": ["inventario_consolidado_tucentral.xlsx"],
+    "tucentralonline": ["inventario_consolidado_tucentral.xlsx", "inventario_por_sede_tucentral.xlsx"],
     "viva": ["catalogo_viva.xlsx"],
 }
 
@@ -143,6 +146,21 @@ def run_store(name: str, timeout: int, run_id: str) -> dict:
                 raise FileNotFoundError(f"No se generó CSV nuevo: {source}")
             dest, rows = publish_csv(source, final_dir)
             outputs.append({"ruta": str(dest.relative_to(ROOT)), "filas": rows})
+        if name == "emporium":
+            frame = pd.read_csv(script.parent / "catalogo_emporium.csv", dtype=str, encoding="utf-8-sig")
+            valid_ean = frame["barcode"].fillna("").str.fullmatch(r"\d{8,14}")
+            valid_price = pd.to_numeric(frame["precio_final_ref"], errors="coerce").gt(0)
+            review = frame.loc[~valid_ean | ~valid_price].copy()
+            if not review.empty:
+                review["motivo_revision"] = [
+                    ", ".join(reason for reason, bad in (("ean_dudoso", not ean), ("precio_no_positivo", not price)) if bad)
+                    for ean, price in zip(valid_ean.loc[review.index], valid_price.loc[review.index])
+                ]
+                target = final_dir / "revisar_emporium.xlsx"
+                temporary = target.with_name(target.stem + ".tmp.xlsx")
+                review.to_excel(temporary, index=False)
+                temporary.replace(target)
+                outputs.append({"ruta": str(target.relative_to(ROOT)), "filas": len(review)})
         for filename in XLSX.get(name, []):
             target = final_dir / filename
             if not target.exists() or datetime.fromtimestamp(target.stat().st_mtime, timezone.utc) < started:
@@ -216,6 +234,7 @@ def main() -> int:
     choice.add_argument("--list", action="store_true")
     parser.add_argument("--exclude", nargs="*", default=[], choices=sorted(set(STORES) | set(SKIP) | {"dataprecio"}))
     parser.add_argument("--timeout", type=int, default=3600, help="segundos por tienda")
+    parser.add_argument("--resume", action="store_true", help="continúa tiendas con checkpoint local")
     args = parser.parse_args()
     if args.list:
         for name in sorted(set(STORES) | set(SKIP) | {"dataprecio"}):
@@ -235,6 +254,8 @@ def main() -> int:
             record = run_dataprecio(args.timeout, run_id)
         else:
             print(f"Ejecutando {name}...", flush=True)
+            if args.resume and name in RESUME_ENV:
+                os.environ[RESUME_ENV[name]] = "1"
             record = run_store(name, args.timeout, run_id)
         results.append(record)
         print(json.dumps(record, ensure_ascii=False), flush=True)

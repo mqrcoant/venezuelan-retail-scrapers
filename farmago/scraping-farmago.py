@@ -36,11 +36,12 @@ def scrapear_categoria_farmago(url_categoria, nombre_categoria):
             url_paginada = f"{url_categoria}/page/{pagina_actual}"
             
         time.sleep(1)
-        respuesta = requests.get(url_paginada, headers=headers)
+        respuesta = requests.get(url_paginada, headers=headers, timeout=20)
         
         if respuesta.status_code != 200:
-            print(f"  Fin de la categoría (Código {respuesta.status_code}).")
-            break
+            if respuesta.status_code == 404 and pagina_actual > 1:
+                break
+            raise requests.HTTPError(f"Farmago devolvió {respuesta.status_code} en {url_paginada}")
 
         soup = BeautifulSoup(respuesta.text, 'html.parser')
         tarjetas = soup.select('td.oe_product')
